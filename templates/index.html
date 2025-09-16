@@ -336,4 +336,54 @@
             if (selectedSymbols && selectedSymbols.length > 0) {
                 $.get(`/get_chart_data/${selectedSymbols[0]}/${timeframe}`, function(graphJSON) {
                     if (!graphJSON.error) {
-                        Plotly.newPlot('priceChart', JSON.parse(graphJSON
+                        Plotly.newPlot('priceChart', JSON.parse(graphJSON).data, JSON.parse(graphJSON).layout);
+                    }
+                });
+            }
+        }
+
+        // Button handlers
+        $('#startBot').click(function() {
+            $.post('/start_bot', function(response) {
+                alert(response.message);
+                updateAccountInfo();
+            });
+        });
+
+        $('#predictOnly').click(function() {
+            $.post('/predict_only', function(response) {
+                alert(response.message);
+                updateAccountInfo();
+            });
+        });
+
+        $('#stopBot').click(function() {
+            $.post('/stop_bot', function(response) {
+                alert(response.message);
+                updateAccountInfo();
+            });
+        });
+
+        $('#updatePredictions').click(function() {
+            updatePredictions();
+            updateCharts();
+        });
+
+        // Auto-update every 30 seconds
+        setInterval(function() {
+            updateMarketStatus();
+            updateAccountInfo();
+            updatePredictions();
+            updateCharts();
+        }, 30000);
+
+        // Initial load
+        $(document).ready(function() {
+            updateMarketStatus();
+            updateAccountInfo();
+            updatePredictions();
+            updateCharts();
+        });
+    </script>
+</body>
+</html>
