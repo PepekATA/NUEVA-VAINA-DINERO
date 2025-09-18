@@ -1,23 +1,30 @@
+# train_model.py - Versión completa con auto-sincronización
+
 import numpy as np
 import pandas as pd
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
 from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier
-from sklearn.metrics import accuracy_score, classification_report
+from sklearn.metrics import accuracy_score, classification_report, confusion_matrix
 import tensorflow as tf
 from tensorflow.keras.models import Sequential, Model
 from tensorflow.keras.layers import (LSTM, GRU, Dense, Dropout, Input, 
                                    Conv1D, MaxPooling1D, Flatten, 
                                    MultiHeadAttention, LayerNormalization)
 from tensorflow.keras.optimizers import Adam
-from tensorflow.keras.callbacks import EarlyStopping, ModelCheckpoint
+from tensorflow.keras.callbacks import EarlyStopping, ModelCheckpoint, ReduceLROnPlateau
 import xgboost as xgb
 import lightgbm as lgb
 from catboost import CatBoostClassifier
 import joblib
 import os
+import json
 from datetime import datetime
 import logging
+import gc
+import warnings
+warnings.filterwarnings('ignore')
+
 from config import Config
 from data_fetcher import DataFetcher
 
@@ -27,9 +34,12 @@ class ModelTrainer:
         self.scalers = {}
         self.data_fetcher = DataFetcher()
         self.setup_logging()
-        self.agents = {}  # Store all agents per symbol
+        self.agents = {}
+        self.training_history = {}
+        self.sync_enabled = True  # Flag para activar/desactivar sincronización
         
     def setup_logging(self):
+        os.makedirs(Config.LOGS_DIR, exist_ok=True)
         logging.basicConfig(
             level=logging.INFO,
             format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -51,10 +61,10 @@ class ModelTrainer:
             
             # Create multiple label types for different agents
             labels = {
-                'binary': (df['close'].shift(-1) > df['close']).astype(int).values,  # Up/Down
+                'binary': (df['close'].shift(-1) > df['close']).astype(int).values,
                 'multiclass': pd.qcut(df['close'].pct_change().shift(-1), 
-                                     q=5, labels=[0,1,2,3,4], duplicates='drop').fillna(2).astype(int).values,  # 5 classes
-                'regression': df['close'].shift(-1).values  # Price prediction
+                                     q=5, labels=[0,1,2,3,4], duplicates='drop').fillna(2).astype(int).values,
+                'regression': df['close'].shift(-1).values
             }
             
             # Remove last row (no label)
@@ -78,7 +88,7 @@ class ModelTrainer:
             return None, None
             
     def build_lstm_agent(self, input_shape):
-        """Build LSTM agent"""
+        """Build LSTM agent with improved architecture"""
         model = Sequential([
             LSTM(128, return_sequences=True, input_shape=input_shape),
             Dropout(0.3),
@@ -93,7 +103,7 @@ class ModelTrainer:
         model.compile(
             optimizer=Adam(learning_rate=0.001),
             loss='binary_crossentropy',
-            metrics=['accuracy']
+            metrics=['accuracy', tf.keras.metrics.AUC()]
         )
         
         return model
@@ -114,7 +124,7 @@ class ModelTrainer:
         model.compile(
             optimizer=Adam(learning_rate=0.001),
             loss='binary_crossentropy',
-            metrics=['accuracy']
+            metrics=['accuracy', tf.keras.metrics.AUC()]
         )
         
         return model
@@ -136,7 +146,7 @@ class ModelTrainer:
         model.compile(
             optimizer=Adam(learning_rate=0.001),
             loss='binary_crossentropy',
-            metrics=['accuracy']
+            metrics=['accuracy', tf.keras.metrics.AUC()]
         )
         
         return model
@@ -173,7 +183,7 @@ class ModelTrainer:
         model.compile(
             optimizer=Adam(learning_rate=0.001),
             loss='binary_crossentropy',
-            metrics=['accuracy']
+            metrics=['accuracy', tf.keras.metrics.AUC()]
         )
         
         return model
@@ -187,6 +197,7 @@ class ModelTrainer:
         X_test_flat = X_test.reshape(X_test.shape[0], -1)
         
         # Random Forest Agent
+        self.logger.info("Training Random Forest agent...")
         rf_agent = RandomForestClassifier(
             n_estimators=200,
             max_depth=15,
@@ -198,6 +209,7 @@ class ModelTrainer:
         agents['random_forest'] = rf_agent
         
         # XGBoost Agent
+        self.logger.info("Training XGBoost agent...")
         xgb_agent = xgb.XGBClassifier(
             n_estimators=200,
             max_depth=10,
@@ -211,17 +223,20 @@ class ModelTrainer:
         agents['xgboost'] = xgb_agent
         
         # LightGBM Agent
+        self.logger.info("Training LightGBM agent...")
         lgb_agent = lgb.LGBMClassifier(
             n_estimators=200,
             max_depth=10,
             learning_rate=0.1,
             num_leaves=31,
-            random_state=42
+            random_state=42,
+            verbosity=-1
         )
         lgb_agent.fit(X_train_flat, y_train)
         agents['lightgbm'] = lgb_agent
         
         # CatBoost Agent
+        self.logger.info("Training CatBoost agent...")
         catboost_agent = CatBoostClassifier(
             iterations=200,
             depth=8,
@@ -242,9 +257,11 @@ class ModelTrainer:
         return agents
         
     def train_all_agents_for_symbol(self, symbol, timeframe='1Min', epochs=50, batch_size=32):
-        """Train all agents for a specific symbol"""
+        """Train all agents for a specific symbol with auto-sync"""
         try:
+            self.logger.info(f"="*60)
             self.logger.info(f"Training {Config.AGENTS_PER_SYMBOL} agents for {symbol} - {timeframe}")
+            self.logger.info(f"="*60)
             
             # Fetch data
             df = self.data_fetcher.fetch_realtime_data(symbol, timeframe, limit=2000)
@@ -280,31 +297,52 @@ class ModelTrainer:
             X_test_scaled = X_test_scaled.reshape(X_test.shape)
             
             agents = {}
+            agent_metrics = {}
+            
+            # Callbacks para deep learning
+            early_stop = EarlyStopping(
+                monitor='val_loss', 
+                patience=10, 
+                restore_best_weights=True
+            )
+            
+            reduce_lr = ReduceLROnPlateau(
+                monitor='val_loss',
+                factor=0.5,
+                patience=5,
+                min_lr=0.00001
+            )
             
             # 1. Train LSTM Agent
-            self.logger.info(f"Training LSTM agent for {symbol}")
+            self.logger.info(f"[1/{Config.AGENTS_PER_SYMBOL}] Training LSTM agent...")
             lstm_agent = self.build_lstm_agent((X_train.shape[1], X_train.shape[2]))
             
-            early_stop = EarlyStopping(monitor='val_loss', patience=10, restore_best_weights=True)
-            checkpoint = ModelCheckpoint(
+            checkpoint_lstm = ModelCheckpoint(
                 f"{Config.MODELS_DIR}/{symbol}_{timeframe}_lstm.h5",
                 save_best_only=True,
                 monitor='val_accuracy',
                 mode='max'
             )
             
-            lstm_agent.fit(
+            history_lstm = lstm_agent.fit(
                 X_train_scaled, y_train,
                 epochs=epochs,
                 batch_size=batch_size,
                 validation_data=(X_test_scaled, y_test),
-                callbacks=[early_stop, checkpoint],
+                callbacks=[early_stop, reduce_lr, checkpoint_lstm],
                 verbose=0
             )
+            
+            lstm_pred = (lstm_agent.predict(X_test_scaled) > 0.5).astype(int).flatten()
+            agent_metrics['lstm'] = {
+                'accuracy': accuracy_score(y_test, lstm_pred),
+                'history': history_lstm.history
+            }
             agents['lstm'] = lstm_agent
+            self.logger.info(f"LSTM Accuracy: {agent_metrics['lstm']['accuracy']:.4f}")
             
             # 2. Train GRU Agent
-            self.logger.info(f"Training GRU agent for {symbol}")
+            self.logger.info(f"[2/{Config.AGENTS_PER_SYMBOL}] Training GRU agent...")
             gru_agent = self.build_gru_agent((X_train.shape[1], X_train.shape[2]))
             
             checkpoint_gru = ModelCheckpoint(
@@ -314,18 +352,25 @@ class ModelTrainer:
                 mode='max'
             )
             
-            gru_agent.fit(
+            history_gru = gru_agent.fit(
                 X_train_scaled, y_train,
                 epochs=epochs,
                 batch_size=batch_size,
                 validation_data=(X_test_scaled, y_test),
-                callbacks=[early_stop, checkpoint_gru],
+                callbacks=[early_stop, reduce_lr, checkpoint_gru],
                 verbose=0
             )
+            
+            gru_pred = (gru_agent.predict(X_test_scaled) > 0.5).astype(int).flatten()
+            agent_metrics['gru'] = {
+                'accuracy': accuracy_score(y_test, gru_pred),
+                'history': history_gru.history
+            }
             agents['gru'] = gru_agent
+            self.logger.info(f"GRU Accuracy: {agent_metrics['gru']['accuracy']:.4f}")
             
             # 3. Train CNN Agent
-            self.logger.info(f"Training CNN agent for {symbol}")
+            self.logger.info(f"[3/{Config.AGENTS_PER_SYMBOL}] Training CNN agent...")
             cnn_agent = self.build_cnn_agent((X_train.shape[1], X_train.shape[2]))
             
             checkpoint_cnn = ModelCheckpoint(
@@ -335,43 +380,66 @@ class ModelTrainer:
                 mode='max'
             )
             
-            cnn_agent.fit(
+            history_cnn = cnn_agent.fit(
                 X_train_scaled, y_train,
                 epochs=epochs,
                 batch_size=batch_size,
                 validation_data=(X_test_scaled, y_test),
-                callbacks=[early_stop, checkpoint_cnn],
+                callbacks=[early_stop, reduce_lr, checkpoint_cnn],
                 verbose=0
             )
+            
+            cnn_pred = (cnn_agent.predict(X_test_scaled) > 0.5).astype(int).flatten()
+            agent_metrics['cnn'] = {
+                'accuracy': accuracy_score(y_test, cnn_pred),
+                'history': history_cnn.history
+            }
             agents['cnn'] = cnn_agent
+            self.logger.info(f"CNN Accuracy: {agent_metrics['cnn']['accuracy']:.4f}")
             
             # 4. Train Transformer Agent
-            self.logger.info(f"Training Transformer agent for {symbol}")
-            transformer_agent = self.build_transformer_agent((X_train.shape[1], X_train.shape[2]))
-            
-            checkpoint_transformer = ModelCheckpoint(
-                f"{Config.MODELS_DIR}/{symbol}_{timeframe}_transformer.h5",
-                save_best_only=True,
-                monitor='val_accuracy',
-                mode='max'
-            )
-            
-            transformer_agent.fit(
-                X_train_scaled, y_train,
-                epochs=epochs,
-                batch_size=batch_size,
-                validation_data=(X_test_scaled, y_test),
-                callbacks=[early_stop, checkpoint_transformer],
-                verbose=0
-            )
-            agents['transformer'] = transformer_agent
+            if Config.AGENTS_PER_SYMBOL >= 4:
+                self.logger.info(f"[4/{Config.AGENTS_PER_SYMBOL}] Training Transformer agent...")
+                transformer_agent = self.build_transformer_agent((X_train.shape[1], X_train.shape[2]))
+                
+                checkpoint_transformer = ModelCheckpoint(
+                    f"{Config.MODELS_DIR}/{symbol}_{timeframe}_transformer.h5",
+                    save_best_only=True,
+                    monitor='val_accuracy',
+                    mode='max'
+                )
+                
+                history_transformer = transformer_agent.fit(
+                    X_train_scaled, y_train,
+                    epochs=epochs,
+                    batch_size=batch_size,
+                    validation_data=(X_test_scaled, y_test),
+                    callbacks=[early_stop, reduce_lr, checkpoint_transformer],
+                    verbose=0
+                )
+                
+                transformer_pred = (transformer_agent.predict(X_test_scaled) > 0.5).astype(int).flatten()
+                agent_metrics['transformer'] = {
+                    'accuracy': accuracy_score(y_test, transformer_pred),
+                    'history': history_transformer.history
+                }
+                agents['transformer'] = transformer_agent
+                self.logger.info(f"Transformer Accuracy: {agent_metrics['transformer']['accuracy']:.4f}")
             
             # 5-8. Train Ensemble ML Agents
-            self.logger.info(f"Training ensemble agents for {symbol}")
+            self.logger.info(f"[5-8/{Config.AGENTS_PER_SYMBOL}] Training ensemble agents...")
             ensemble_agents = self.train_ensemble_agents(
                 X_train_scaled, y_train, X_test_scaled, y_test
             )
             agents.update(ensemble_agents)
+            
+            # Evaluar ensemble ML agents
+            X_test_flat = X_test_scaled.reshape(X_test_scaled.shape[0], -1)
+            for name, agent in ensemble_agents.items():
+                pred = agent.predict(X_test_flat)
+                agent_metrics[name] = {
+                    'accuracy': accuracy_score(y_test, pred)
+                }
             
             # Save all agents and scaler
             agent_key = f"{symbol}_{timeframe}"
@@ -389,27 +457,148 @@ class ModelTrainer:
             predictions = []
             for name, agent in agents.items():
                 if name in ['lstm', 'gru', 'cnn', 'transformer']:
-                    pred = agent.predict(X_test_scaled)
+                    pred = (agent.predict(X_test_scaled) > 0.5).astype(int).flatten()
                 else:
-                    pred = agent.predict_proba(X_test_scaled.reshape(X_test_scaled.shape[0], -1))[:, 1:2]
+                    pred = agent.predict(X_test_scaled.reshape(X_test_scaled.shape[0], -1))
                 predictions.append(pred)
                 
-            ensemble_pred = np.mean(predictions, axis=0) > 0.5
+            ensemble_pred = (np.mean(predictions, axis=0) > 0.5).astype(int)
             ensemble_accuracy = accuracy_score(y_test, ensemble_pred)
             
-            self.logger.info(f"Ensemble accuracy for {symbol}: {ensemble_accuracy:.4f}")
+            self.logger.info(f"="*60)
+            self.logger.info(f"ENSEMBLE ACCURACY for {symbol}: {ensemble_accuracy:.4f}")
+            self.logger.info(f"="*60)
             
-            return {
-                'agents': agents,
-                'scaler': scaler,
-                'accuracy': ensemble_accuracy,
-                'timestamp': datetime.now()
+            # Guardar métricas
+            training_result = {
+                'symbol': symbol,
+                'timeframe': timeframe,
+                'timestamp': datetime.now().isoformat(),
+                'ensemble_accuracy': ensemble_accuracy,
+                'agent_metrics': agent_metrics,
+                'total_agents': len(agents),
+                'data_points': len(X),
+                'train_size': len(X_train),
+                'test_size': len(X_test)
             }
+            
+            # Guardar en historial
+            self.training_history[f"{symbol}_{timeframe}"] = training_result
+            
+            # Guardar métricas en archivo
+            self.save_training_metrics(training_result)
+            
+            # AUTO-SINCRONIZACIÓN
+            if self.sync_enabled and ensemble_accuracy > 0:
+                self.auto_sync_models(symbol, timeframe, training_result)
+            
+            # Limpiar memoria
+            self.cleanup_memory()
+            
+            return training_result
             
         except Exception as e:
             self.logger.error(f"Error training agents for {symbol}: {str(e)}")
+            import traceback
+            self.logger.error(traceback.format_exc())
             return None
+    
+    def auto_sync_models(self, symbol, timeframe, training_result):
+        """Auto-sincronizar modelos con GitHub y Google Drive"""
+        try:
+            self.logger.info("🔄 Iniciando auto-sincronización...")
             
+            # Importar el manager de sincronización
+            try:
+                from model_sync import sync_manager
+                
+                # Sincronizar con GitHub
+                self.logger.info("📤 Sincronizando con GitHub...")
+                github_success = sync_manager.sync_to_github()
+                
+                # Sincronizar con Google Drive
+                self.logger.info("📤 Sincronizando con Google Drive...")
+                drive_success = sync_manager.sync_to_gdrive()
+                
+                # Actualizar registro de modelos
+                sync_manager.update_model_registry()
+                
+                if github_success and drive_success:
+                    self.logger.info(f"✅ Modelos de {symbol}-{timeframe} sincronizados exitosamente")
+                    
+                    # Guardar log de sincronización
+                    sync_log = {
+                        'timestamp': datetime.now().isoformat(),
+                        'symbol': symbol,
+                        'timeframe': timeframe,
+                        'accuracy': training_result['ensemble_accuracy'],
+                        'github': github_success,
+                        'gdrive': drive_success
+                    }
+                    
+                    log_file = f"{Config.LOGS_DIR}/sync_log.json"
+                    if os.path.exists(log_file):
+                        with open(log_file, 'r') as f:
+                            logs = json.load(f)
+                    else:
+                        logs = []
+                    
+                    logs.append(sync_log)
+                    
+                    with open(log_file, 'w') as f:
+                        json.dump(logs, f, indent=2)
+                        
+                elif github_success:
+                    self.logger.warning("⚠️ Solo GitHub sincronizado")
+                elif drive_success:
+                    self.logger.warning("⚠️ Solo Google Drive sincronizado")
+                else:
+                    self.logger.error("❌ Sincronización fallida")
+                    
+            except ImportError:
+                self.logger.warning("⚠️ Módulo model_sync no disponible, sincronización manual requerida")
+                
+        except Exception as e:
+            self.logger.error(f"Error en auto-sincronización: {str(e)}")
+    
+    def save_training_metrics(self, result):
+        """Guardar métricas de entrenamiento"""
+        try:
+            metrics_file = f"{Config.DATA_DIR}/training_metrics.json"
+            
+            if os.path.exists(metrics_file):
+                with open(metrics_file, 'r') as f:
+                    metrics = json.load(f)
+            else:
+                metrics = []
+            
+            metrics.append(result)
+            
+            # Mantener solo últimas 100 entradas
+            metrics = metrics[-100:]
+            
+            with open(metrics_file, 'w') as f:
+                json.dump(metrics, f, indent=2, default=str)
+                
+            self.logger.info(f"Métricas guardadas en {metrics_file}")
+            
+        except Exception as e:
+            self.logger.error(f"Error guardando métricas: {str(e)}")
+    
+    def cleanup_memory(self):
+        """Limpiar memoria después del entrenamiento"""
+        try:
+            # Limpiar sesión de TensorFlow
+            tf.keras.backend.clear_session()
+            
+            # Garbage collection
+            gc.collect()
+            
+            self.logger.info("Memoria limpiada")
+            
+        except Exception as e:
+            self.logger.error(f"Error limpiando memoria: {str(e)}")
+    
     def train_all_symbols(self, symbols=None):
         """Train models for all symbols"""
         if symbols is None:
@@ -417,27 +606,157 @@ class ModelTrainer:
             
         results = {}
         total_symbols = len(symbols)
+        successful_trainings = 0
+        failed_trainings = 0
+        
+        self.logger.info(f"🚀 Iniciando entrenamiento de {total_symbols} símbolos")
         
         for i, symbol in enumerate(symbols, 1):
-            self.logger.info(f"Training {symbol} ({i}/{total_symbols})")
+            self.logger.info(f"\n[{i}/{total_symbols}] Procesando {symbol}...")
             
-            for timeframe in ['1Min', '5Min', '15Min']:  # Focus on short timeframes for scalping
-                result = self.train_all_agents_for_symbol(symbol, timeframe)
-                results[f"{symbol}_{timeframe}"] = result is not None
-                
-            # Save progress periodically
-            if i % 10 == 0:
-                self.save_training_progress(results)
-                
-        return results
+            for timeframe in Config.TIMEFRAMES[:3]:  # Focus on short timeframes
+                try:
+                    result = self.train_all_agents_for_symbol(symbol, timeframe)
+                    
+                    if result:
+                        results[f"{symbol}_{timeframe}"] = result
+                        successful_trainings += 1
+                        self.logger.info(f"✅ {symbol}-{timeframe} completado")
+                    else:
+                        failed_trainings += 1
+                        self.logger.error(f"❌ {symbol}-{timeframe} falló")
+                        
+                except Exception as e:
+                    self.logger.error(f"❌ Error con {symbol}-{timeframe}: {str(e)}")
+                    failed_trainings += 1
+                    
+            # Sincronización periódica cada 5 símbolos
+            if i % 5 == 0:
+                self.logger.info(f"📊 Progreso: {i}/{total_symbols} símbolos procesados")
+                if self.sync_enabled:
+                    self.auto_sync_models(symbol, timeframe, results)
+                    
+        # Resumen final
+        self.logger.info(f"\n{'='*60}")
+        self.logger.info(f"📊 RESUMEN DE ENTRENAMIENTO")
+        self.logger.info(f"{'='*60}")
+        self.logger.info(f"✅ Exitosos: {successful_trainings}")
+        self.logger.info(f"❌ Fallidos: {failed_trainings}")
+        self.logger.info(f"📊 Total: {successful_trainings + failed_trainings}")
         
-    def save_training_progress(self, results):
-        """Save training progress to file"""
+        # Sincronización final
+        if self.sync_enabled:
+            self.logger.info("🔄 Sincronización final...")
+            self.auto_sync_models("final", "batch", results)
+        
+        return results
+    
+    def load_model(self, symbol, timeframe):
+        """Load a trained model"""
         try:
-            import json
-            progress_file = f"{Config.DATA_DIR}/training_progress_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
-            with open(progress_file, 'w') as f:
-                json.dump(results, f, indent=4, default=str)
-            self.logger.info(f"Training progress saved to {progress_file}")
+            model_key = f"{symbol}_{timeframe}"
+            
+            if model_key in self.models:
+                return self.models[model_key]
+            
+            models = {}
+            
+            # Load deep learning models
+            for model_type in ['lstm', 'gru', 'cnn', 'transformer']:
+                model_path = f"{Config.MODELS_DIR}/{symbol}_{timeframe}_{model_type}.h5"
+                if os.path.exists(model_path):
+                    models[model_type] = tf.keras.models.load_model(model_path)
+                    self.logger.info(f"Loaded {model_type} model for {symbol}-{timeframe}")
+            
+            # Load ML models
+            for model_type in ['random_forest', 'xgboost', 'lightgbm', 'catboost']:
+                model_path = f"{Config.MODELS_DIR}/{symbol}_{timeframe}_{model_type}.pkl"
+                if os.path.exists(model_path):
+                    models[model_type] = joblib.load(model_path)
+                    self.logger.info(f"Loaded {model_type} model for {symbol}-{timeframe}")
+            
+            # Load scaler
+            scaler_path = f"{Config.MODELS_DIR}/{symbol}_{timeframe}_scaler.pkl"
+            if os.path.exists(scaler_path):
+                scaler = joblib.load(scaler_path)
+                self.logger.info(f"Loaded scaler for {symbol}-{timeframe}")
+            else:
+                scaler = None
+            
+            self.models[model_key] = {
+                'models': models,
+                'scaler': scaler
+            }
+            
+            return self.models[model_key]
+            
         except Exception as e:
-            self.logger.error(f"Error saving progress: {str(e)}")
+            self.logger.error(f"Error loading model: {str(e)}")
+            return None
+    
+    def continuous_training(self, interval_minutes=60):
+        """Continuous training loop with auto-sync"""
+        import time
+        import schedule
+        
+        def training_job():
+            self.logger.info("🔄 Iniciando ciclo de entrenamiento continuo...")
+            
+            # Seleccionar símbolos para entrenar
+            symbols_to_train = Config.SYMBOLS[:10]  # Top 10 símbolos
+            
+            for symbol in symbols_to_train:
+                for timeframe in ['1Min', '5Min']:
+                    try:
+                        result = self.train_all_agents_for_symbol(
+                            symbol, 
+                            timeframe, 
+                            epochs=30  # Menos epochs para entrenamiento rápido
+                        )
+                        
+                        if result:
+                            self.logger.info(f"✅ {symbol}-{timeframe} actualizado")
+                            
+                    except Exception as e:
+                        self.logger.error(f"❌ Error actualizando {symbol}: {str(e)}")
+            
+            self.logger.info("✅ Ciclo de entrenamiento completado")
+        
+        # Programar tarea
+        schedule.every(interval_minutes).minutes.do(training_job)
+        
+        # Ejecutar primera vez
+        training_job()
+        
+        # Loop principal
+        self.logger.info(f"⏰ Entrenamiento continuo activado cada {interval_minutes} minutos")
+        
+        while True:
+            try:
+                schedule.run_pending()
+                time.sleep(60)
+            except KeyboardInterrupt:
+                self.logger.info("⏹️ Entrenamiento continuo detenido")
+                break
+            except Exception as e:
+                self.logger.error(f"Error en loop continuo: {str(e)}")
+                time.sleep(60)
+
+# Función de utilidad para entrenamiento rápido
+def quick_train(symbol, timeframe='5Min'):
+    """Función helper para entrenamiento rápido de un símbolo"""
+    trainer = ModelTrainer()
+    result = trainer.train_all_agents_for_symbol(symbol, timeframe, epochs=20)
+    return result
+
+if __name__ == "__main__":
+    # Ejemplo de uso
+    trainer = ModelTrainer()
+    
+    # Entrenar un símbolo específico
+    result = trainer.train_all_agents_for_symbol('AAPL', '5Min')
+    
+    if result:
+        print(f"✅ Entrenamiento completado con precisión: {result['ensemble_accuracy']:.4f}")
+    else:
+        print("❌ Entrenamiento falló")
