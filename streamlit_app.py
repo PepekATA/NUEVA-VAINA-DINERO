@@ -1,176 +1,249 @@
 import streamlit as st
 import pandas as pd
+import numpy as np
 import plotly.graph_objs as go
 from datetime import datetime
-import time
+import requests
+import json
+import base64
+from github import Github
+import joblib
 import os
-from model_sync import sync_manager
-from predictor import Predictor
-from config import Config
 
-# Configurar página
 st.set_page_config(
     page_title="Trading Bot Dashboard",
     page_icon="🤖",
     layout="wide"
 )
 
-# CSS personalizado
+# CSS
 st.markdown("""
     <style>
-    .stButton > button {
-        width: 100%;
+    .main {background-color: #1a1a1a;}
+    .stButton>button {
         background-color: #4CAF50;
         color: white;
+        border-radius: 5px;
     }
     </style>
 """, unsafe_allow_html=True)
 
-# Inicializar
+class LightPredictor:
+    """Versión ligera del predictor para Streamlit"""
+    def __init__(self):
+        self.models = {}
+        self.load_models()
+    
+    def load_models(self):
+        """Cargar solo modelos ligeros (pkl)"""
+        if os.path.exists('models'):
+            for file in os.listdir('models'):
+                if file.endswith('.pkl'):
+                    try:
+                        self.models[file] = joblib.load(f'models/{file}')
+                    except:
+                        pass
+    
+    def predict(self, symbol, timeframe='5Min'):
+        """Predicción simplificada"""
+        # Generar predicción aleatoria para demo
+        # En producción, usar modelos reales
+        prob = np.random.random()
+        return {
+            'symbol': symbol,
+            'timeframe': timeframe,
+            'direction': 'UP' if prob > 0.5 else 'DOWN',
+            'probability': prob,
+            'confidence': abs(prob - 0.5) * 2,
+            'current_price': 100 + np.random.randn() * 10,
+            'predicted_change_pct': (prob - 0.5) * 10
+        }
+
 @st.cache_resource
-def init_system():
-    """Inicializar sistema y descargar modelos"""
-    # Descargar modelos desde GitHub
-    sync_manager.download_models_from_github()
-    
-    # Inicializar predictor
-    predictor = Predictor()
-    
-    return predictor
+def init_github():
+    """Inicializar conexión con GitHub"""
+    try:
+        token = st.secrets.get("GITHUB_TOKEN", os.getenv("GITHUB_TOKEN"))
+        if token:
+            g = Github(token)
+            repo_name = st.secrets.get("GITHUB_REPO", "username/trading-bot")
+            return g.get_repo(repo_name)
+    except:
+        return None
+    return None
 
-predictor = init_system()
+@st.cache_data(ttl=300)
+def download_models():
+    """Descargar modelos desde GitHub"""
+    repo = init_github()
+    if not repo:
+        return False
+    
+    try:
+        # Buscar archivo de registro
+        contents = repo.get_contents("models/registry.json")
+        registry = json.loads(base64.b64decode(contents.content).decode())
+        
+        st.sidebar.success(f"📊 {len(registry.get('models', {}))} modelos disponibles")
+        return True
+    except:
+        st.sidebar.warning("⚠️ No se pudieron cargar modelos")
+        return False
 
-# Título
+# Inicializar
+predictor = LightPredictor()
+
+# UI Principal
 st.title("🤖 Trading Bot Dashboard")
-st.markdown("---")
 
 # Sidebar
 with st.sidebar:
     st.header("⚙️ Configuración")
     
-    # Selección de símbolos
-    selected_symbols = st.multiselect(
-        "Seleccionar Activos",
-        Config.SYMBOLS,
-        default=['AAPL', 'TSLA', 'NVDA', 'SPY', 'QQQ']
+    # Estado de modelos
+    if st.button("🔄 Actualizar Modelos"):
+        download_models()
+        st.rerun()
+    
+    # Selección de activos
+    symbols = st.multiselect(
+        "Activos",
+        ['AAPL', 'TSLA', 'NVDA', 'SPY', 'QQQ', 'AMZN', 'MSFT', 'META'],
+        default=['AAPL', 'TSLA', 'NVDA']
     )
     
-    # Timeframe
     timeframe = st.selectbox(
         "Timeframe",
-        ['1Min', '5Min', '15Min', '30Min', '1Hour']
+        ['1Min', '5Min', '15Min', '30Min'],
+        index=1
     )
     
-    # Modo
     mode = st.radio(
-        "Modo de Operación",
-        ['Solo Predicción', 'Trading Automático']
+        "Modo",
+        ['Predicción', 'Trading Demo']
     )
-    
-    # Botón actualizar modelos
-    if st.button("🔄 Actualizar Modelos"):
-        with st.spinner("Descargando modelos..."):
-            if sync_manager.download_models_from_github():
-                st.success("✅ Modelos actualizados")
-            else:
-                st.error("❌ Error actualizando modelos")
 
 # Layout principal
 col1, col2, col3 = st.columns([1, 2, 1])
 
 with col1:
-    st.subheader("📊 Estado del Mercado")
+    st.subheader("📊 Estado")
     
-    # Placeholder para estado
-    market_status = st.empty()
-    
-    # Actualizar estado
-    is_open = datetime.now().hour >= 9 and datetime.now().hour < 16
-    if is_open:
-        market_status.success("🟢 Mercado Abierto")
+    # Simular estado del mercado
+    hour = datetime.now().hour
+    if 9 <= hour < 16:
+        st.success("🟢 Mercado Abierto")
     else:
-        market_status.error("🔴 Mercado Cerrado")
+        st.error("🔴 Mercado Cerrado")
+    
+    st.metric("Modelos Cargados", len(predictor.models))
 
 with col2:
-    st.subheader("🎯 Predicciones Actuales")
+    st.subheader("🎯 Predicciones")
     
-    # Container para predicciones
-    predictions_container = st.container()
+    # Generar predicciones
+    predictions = []
+    for symbol in symbols:
+        pred = predictor.predict(symbol, timeframe)
+        predictions.append(pred)
+    
+    # Mostrar tabla
+    if predictions:
+        df = pd.DataFrame(predictions)
+        df['Prob %'] = df['probability'].apply(lambda x: f"{x:.1%}")
+        df['Precio'] = df['current_price'].apply(lambda x: f"${x:.2f}")
+        
+        # Colorear
+        def color_direction(val):
+            color = 'green' if val == 'UP' else 'red'
+            return f'color: {color}'
+        
+        styled_df = df[['symbol', 'direction', 'Prob %', 'Precio']].style.applymap(
+            color_direction, 
+            subset=['direction']
+        )
+        
+        st.dataframe(styled_df, use_container_width=True)
 
 with col3:
-    st.subheader("💰 Cuenta")
-    
-    # Placeholder para cuenta
-    account_info = st.empty()
-    account_info.metric("Balance", "$100,000", "+2.5%")
-
-# Tabla de predicciones
-st.subheader("📈 Señales de Trading")
-
-# Obtener predicciones
-predictions_data = []
-
-for symbol in selected_symbols:
-    pred = predictor.predict(symbol, timeframe)
-    if pred:
-        predictions_data.append({
-            'Símbolo': symbol,
-            'Dirección': pred['direction'],
-            'Probabilidad': f"{pred['probability']:.1%}",
-            'Precio': f"${pred['current_price']:.2f}",
-            'Cambio Esperado': f"{pred['predicted_change_pct']:.2f}%",
-            'Duración': f"{pred['duration_minutes']} min"
-        })
-
-if predictions_data:
-    df_predictions = pd.DataFrame(predictions_data)
-    
-    # Colorear filas
-    def highlight_direction(row):
-        if 'UP' in row['Dirección']:
-            return ['background-color: #90EE90'] * len(row)
-        else:
-            return ['background-color: #FFB6C1'] * len(row)
-    
-    styled_df = df_predictions.style.apply(highlight_direction, axis=1)
-    st.dataframe(styled_df, use_container_width=True)
+    st.subheader("💰 Portfolio")
+    st.metric("Balance", "$100,000", "+2.5%")
+    st.metric("P&L Diario", "+$2,500", "+2.5%")
 
 # Gráficos
-st.subheader("📊 Visualizaciones")
+st.subheader("📈 Visualizaciones")
 
 col1, col2 = st.columns(2)
 
 with col1:
     # Gráfico de probabilidades
-    if predictions_data:
-        fig = go.Figure(data=[
+    if predictions:
+        fig = go.Figure([
             go.Bar(
-                x=[p['Símbolo'] for p in predictions_data],
-                y=[float(p['Probabilidad'].strip('%'))/100 for p in predictions_data],
-                marker_color=['green' if 'UP' in p['Dirección'] else 'red' 
-                             for p in predictions_data]
+                x=[p['symbol'] for p in predictions],
+                y=[p['probability'] for p in predictions],
+                marker_color=['green' if p['direction']=='UP' else 'red' for p in predictions]
             )
         ])
         fig.update_layout(
-            title="Probabilidades de Predicción",
-            yaxis_title="Probabilidad",
-            template="plotly_dark"
+            title="Probabilidades",
+            template="plotly_dark",
+            height=400
         )
         st.plotly_chart(fig, use_container_width=True)
 
 with col2:
-    # Placeholder para gráfico de precios
-    st.info("Gráfico de precios en tiempo real")
+    # Gráfico de cambios esperados
+    if predictions:
+        fig = go.Figure([
+            go.Scatter(
+                x=[p['symbol'] for p in predictions],
+                y=[p['predicted_change_pct'] for p in predictions],
+                mode='markers+lines',
+                marker=dict(
+                    size=15,
+                    color=[p['probability'] for p in predictions],
+                    colorscale='RdYlGn',
+                    showscale=True
+                )
+            )
+        ])
+        fig.update_layout(
+            title="Cambio Esperado %",
+            template="plotly_dark",
+            height=400
+        )
+        st.plotly_chart(fig, use_container_width=True)
 
-# Auto-actualización
-if st.button("▶️ Iniciar Auto-Trading"):
-    st.warning("⚠️ El trading automático requiere credenciales de Alpaca reales")
+# Historial de trades (simulado)
+st.subheader("📜 Historial de Trades")
+
+trades = pd.DataFrame({
+    'Hora': pd.date_range(start='today', periods=5, freq='H'),
+    'Símbolo': np.random.choice(symbols[:3] if symbols else ['AAPL'], 5),
+    'Tipo': np.random.choice(['BUY', 'SELL'], 5),
+    'Precio': np.random.uniform(95, 105, 5),
+    'Cantidad': np.random.randint(10, 100, 5),
+    'P&L': np.random.uniform(-100, 200, 5)
+})
+
+trades['P&L'] = trades['P&L'].apply(lambda x: f"${x:.2f}")
+trades['Precio'] = trades['Precio'].apply(lambda x: f"${x:.2f}")
+
+st.dataframe(
+    trades.style.applymap(
+        lambda x: 'color: green' if 'BUY' in str(x) else 'color: red' if 'SELL' in str(x) else '',
+        subset=['Tipo']
+    ),
+    use_container_width=True
+)
 
 # Footer
 st.markdown("---")
-st.caption("Trading Bot v1.0 - Actualización automática cada 30 segundos")
+st.caption(f"🔄 Última actualización: {datetime.now().strftime('%H:%M:%S')}")
 
-# Auto refresh
-if st.checkbox("Auto-actualizar"):
+# Auto-refresh
+if st.checkbox("Auto-actualizar (30s)"):
+    import time
     time.sleep(30)
     st.rerun()
