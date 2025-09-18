@@ -1,0 +1,41 @@
+name: Model Sync
+
+on:
+  schedule:
+    - cron: '0 */6 * * *'  # Cada 6 horas
+  push:
+    paths:
+      - 'models/**'
+  workflow_dispatch:
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v2
+    
+    - name: Setup Python
+      uses: actions/setup-python@v2
+      with:
+        python-version: '3.9'
+    
+    - name: Install dependencies
+      run: |
+        pip install -r requirements.txt
+    
+    - name: Sync Models
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        ALPACA_API_KEY: ${{ secrets.ALPACA_API_KEY }}
+        ALPACA_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY }}
+      run: |
+        python model_sync.py
+    
+    - name: Commit changes
+      run: |
+        git config --local user.email "bot@trading.com"
+        git config --local user.name "Trading Bot"
+        git add .
+        git commit -m "Auto-sync models" || exit 0
+        git push
