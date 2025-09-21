@@ -5,15 +5,17 @@ import plotly.graph_objs as go
 from datetime import datetime
 import time
 import json
+import os
 
-# Configuración
-API_URL = st.secrets.get("API_URL", "http://localhost:8000")  # URL de tu API
-
+# Configuración de página
 st.set_page_config(
     page_title="Trading Bot - Real Trading",
     page_icon="🤖",
     layout="wide"
 )
+
+# Obtener API URL desde secrets o variable de entorno
+API_URL = st.secrets.get("API_URL", os.getenv("API_URL", "https://your-api-url.herokuapp.com"))
 
 # Funciones para API
 def api_get(endpoint):
@@ -42,8 +44,7 @@ api_status = api_get("/")
 if api_status:
     st.success(f"✅ API Conectada - Modo: {api_status.get('mode', 'UNKNOWN')}")
 else:
-    st.error("❌ API no disponible")
-    st.stop()
+    st.warning("⚠️ API no disponible - Modo Demo")
 
 # Sidebar
 with st.sidebar:
