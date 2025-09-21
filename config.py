@@ -7,66 +7,42 @@ from pathlib import Path
 load_dotenv()
 
 class Config:
-    # Paths for credentials
-    COLAB_CREDS_PATH = '/content/drive/MyDrive/TradingBot/credentials.json'
-    LOCAL_CREDS_PATH = 'credentials.json'
-    
-    @classmethod
-    def load_credentials(cls):
-        """Load credentials from Google Drive in Colab or local file"""
-        try:
-            # Check if running in Google Colab
-            if 'google.colab' in str(get_ipython()):
-                creds_path = cls.COLAB_CREDS_PATH
-            else:
-                creds_path = cls.LOCAL_CREDS_PATH
-                
-            if os.path.exists(creds_path):
-                with open(creds_path, 'r') as f:
-                    creds = json.load(f)
-                    return creds
-            return None
-        except:
-            return None
-    
-    @classmethod
-    def save_credentials(cls, alpaca_key, alpaca_secret, github_token, gdrive_folder_id):
-        """Save credentials to file"""
-        creds = {
-            'ALPACA_API_KEY': alpaca_key,
-            'ALPACA_SECRET_KEY': alpaca_secret,
-            'GITHUB_TOKEN': github_token,
-            'GDRIVE_FOLDER_ID': gdrive_folder_id
-        }
+    # Detectar si estamos en Streamlit Cloud
+    try:
+        import streamlit as st
+        IN_STREAMLIT = True
+        # Si estamos en Streamlit, usar secrets
+        ALPACA_API_KEY = st.secrets.get("ALPACA_API_KEY", os.getenv('ALPACA_API_KEY'))
+        ALPACA_SECRET_KEY = st.secrets.get("ALPACA_SECRET_KEY", os.getenv('ALPACA_SECRET_KEY'))
+        GITHUB_TOKEN = st.secrets.get("GITHUB_TOKEN", os.getenv('GITHUB_TOKEN'))
+        GITHUB_REPO = st.secrets.get("GITHUB_REPO", os.getenv('GITHUB_REPO'))
+        GDRIVE_FOLDER_ID = st.secrets.get("GDRIVE_FOLDER_ID", os.getenv('GDRIVE_FOLDER_ID'))
+    except:
+        IN_STREAMLIT = False
+        # Si no estamos en Streamlit, usar variables de entorno o credenciales locales
         
-        try:
-            # Check if running in Google Colab
-            if 'google.colab' in str(get_ipython()):
-                creds_path = cls.COLAB_CREDS_PATH
-                os.makedirs(os.path.dirname(creds_path), exist_ok=True)
-            else:
-                creds_path = cls.LOCAL_CREDS_PATH
-                
-            with open(creds_path, 'w') as f:
-                json.dump(creds, f)
-            return True
-        except:
-            return False
+        # Paths para credenciales
+        COLAB_CREDS_PATH = '/content/drive/MyDrive/TradingBot/credentials.json'
+        LOCAL_CREDS_PATH = 'credentials.json'
+        
+        # Intentar cargar credenciales desde archivo
+        creds = {}
+        if os.path.exists(COLAB_CREDS_PATH):
+            with open(COLAB_CREDS_PATH, 'r') as f:
+                creds = json.load(f)
+        elif os.path.exists(LOCAL_CREDS_PATH):
+            with open(LOCAL_CREDS_PATH, 'r') as f:
+                creds = json.load(f)
+        
+        # Usar variables de entorno o credenciales del archivo
+        ALPACA_API_KEY = os.getenv('ALPACA_API_KEY') or creds.get('ALPACA_API_KEY')
+        ALPACA_SECRET_KEY = os.getenv('ALPACA_SECRET_KEY') or creds.get('ALPACA_SECRET_KEY')
+        GITHUB_TOKEN = os.getenv('GITHUB_TOKEN') or creds.get('GITHUB_TOKEN')
+        GITHUB_REPO = os.getenv('GITHUB_REPO') or creds.get('GITHUB_REPO')
+        GDRIVE_FOLDER_ID = os.getenv('GDRIVE_FOLDER_ID') or creds.get('GDRIVE_FOLDER_ID')
     
-    # Load credentials on startup
-    _creds = load_credentials.__func__(None) or {}
-    
-    # Alpaca API
-    ALPACA_API_KEY = os.getenv('ALPACA_API_KEY') or _creds.get('ALPACA_API_KEY')
-    ALPACA_SECRET_KEY = os.getenv('ALPACA_SECRET_KEY') or _creds.get('ALPACA_SECRET_KEY')
-    ALPACA_BASE_URL = 'https://paper-api.alpaca.markets'  # Paper trading
-    
-    # GitHub
-    GITHUB_TOKEN = os.getenv('GITHUB_TOKEN') or _creds.get('GITHUB_TOKEN')
-    GITHUB_REPO = os.getenv('GITHUB_REPO') or _creds.get('GITHUB_REPO')
-    
-    # Google Drive
-    GDRIVE_FOLDER_ID = os.getenv('GDRIVE_FOLDER_ID') or _creds.get('GDRIVE_FOLDER_ID')
+    # Alpaca API Configuration
+    ALPACA_BASE_URL = 'https://paper-api.alpaca.markets'  # Paper trading para empezar
     
     # Trading Parameters
     INITIAL_CAPITAL = 100.0
@@ -163,9 +139,46 @@ class Config:
     TAKE_PROFIT_PCT = 0.05
     
     # File Paths
-    MODELS_DIR = 'models'
-    DATA_DIR = 'data'
-    LOGS_DIR = 'logs'
+    if IN_STREAMLIT:
+        # En Streamlit Cloud usar paths temporales
+        MODELS_DIR = '/tmp/models'
+        DATA_DIR = '/tmp/data'
+        LOGS_DIR = '/tmp/logs'
+    else:
+        # En local o Colab usar paths normales
+        MODELS_DIR = 'models'
+        DATA_DIR = 'data'
+        LOGS_DIR = 'logs'
+    
+    # Crear directorios si no existen
+    os.makedirs(MODELS_DIR, exist_ok=True)
+    os.makedirs(DATA_DIR, exist_ok=True)
+    os.makedirs(LOGS_DIR, exist_ok=True)
     
     # Google Colab specific paths
     COLAB_DRIVE_PATH = '/content/drive/MyDrive/TradingBot'
+    
+    @classmethod
+    def save_credentials(cls, alpaca_key, alpaca_secret, github_token, github_repo, gdrive_folder_id):
+        """Save credentials to file"""
+        creds = {
+            'ALPACA_API_KEY': alpaca_key,
+            'ALPACA_SECRET_KEY': alpaca_secret,
+            'GITHUB_TOKEN': github_token,
+            'GITHUB_REPO': github_repo,
+            'GDRIVE_FOLDER_ID': gdrive_folder_id
+        }
+        
+        try:
+            # Check if running in Google Colab
+            if os.path.exists('/content'):
+                creds_path = cls.COLAB_CREDS_PATH
+                os.makedirs(os.path.dirname(creds_path), exist_ok=True)
+            else:
+                creds_path = cls.LOCAL_CREDS_PATH
+                
+            with open(creds_path, 'w') as f:
+                json.dump(creds, f)
+            return True
+        except:
+            return False
