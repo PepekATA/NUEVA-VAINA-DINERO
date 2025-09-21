@@ -19,23 +19,35 @@ st.set_page_config(
 )
 
 # Obtener configuración desde Streamlit Secrets
-ALPACA_API_KEY = st.secrets["ALPACA_API_KEY"]
-ALPACA_SECRET_KEY = st.secrets["ALPACA_SECRET_KEY"]
-ALPACA_BASE_URL = st.secrets.get("ALPACA_BASE_URL", "https://paper-api.alpaca.markets")
-GITHUB_TOKEN = st.secrets["GITHUB_TOKEN"]
-GITHUB_REPO = st.secrets["GITHUB_REPO"]
+try:
+    ALPACA_API_KEY = st.secrets["ALPACA_API_KEY"]
+    ALPACA_SECRET_KEY = st.secrets["ALPACA_SECRET_KEY"]
+    ALPACA_BASE_URL = st.secrets.get("ALPACA_BASE_URL", "https://paper-api.alpaca.markets")
+    GITHUB_TOKEN = st.secrets.get("GITHUB_TOKEN", "")
+    GITHUB_REPO = st.secrets.get("GITHUB_REPO", "")
+except:
+    st.error("Por favor configura los secrets en Streamlit Cloud")
+    st.stop()
 
 # Inicializar Alpaca API
 @st.cache_resource
 def init_alpaca():
-    return tradeapi.REST(
-        ALPACA_API_KEY,
-        ALPACA_SECRET_KEY,
-        ALPACA_BASE_URL,
-        api_version='v2'
-    )
+    try:
+        return tradeapi.REST(
+            ALPACA_API_KEY,
+            ALPACA_SECRET_KEY,
+            ALPACA_BASE_URL,
+            api_version='v2'
+        )
+    except Exception as e:
+        st.error(f"Error conectando con Alpaca: {e}")
+        return None
 
 alpaca = init_alpaca()
+
+if not alpaca:
+    st.error("No se pudo conectar con Alpaca. Verifica tus credenciales.")
+    st.stop()
 
 # Funciones de datos
 def get_market_status():
@@ -48,7 +60,7 @@ def get_market_status():
         }
     except Exception as e:
         st.error(f"Error: {e}")
-        return None
+        return {'is_open': False, 'next_open': None, 'next_close': None}
 
 def get_account_info():
     try:
@@ -61,7 +73,7 @@ def get_account_info():
             'trading_blocked': account.trading_blocked
         }
     except Exception as e:
-        st.error(f"Error: {e}")
+        st.error(f"Error obteniendo cuenta: {e}")
         return None
 
 def get_positions():
@@ -72,7 +84,7 @@ def get_positions():
                 'symbol': pos.symbol,
                 'qty': float(pos.qty),
                 'avg_entry_price': float(pos.avg_entry_price),
-                'current_price': float(pos.current_price),
+                'current_price': float(pos.current_price) if hasattr(pos, 'current_price') else 0,
                 'market_value': float(pos.market_value),
                 'unrealized_pl': float(pos.unrealized_pl),
                 'unrealized_plpc': float(pos.unrealized_plpc),
@@ -81,19 +93,25 @@ def get_positions():
             for pos in positions
         ]
     except Exception as e:
-        st.error(f"Error: {e}")
+        st.error(f"Error obteniendo posiciones: {e}")
         return []
 
-def get_realtime_data(symbol, timeframe='1Min'):
+def get_realtime_data(symbol, timeframe='5Min'):
     try:
-        end = datetime.now()
-        if timeframe == '1Min':
-            start = end - pd.Timedelta(hours=2)
-        elif timeframe == '5Min':
-            start = end - pd.Timedelta(hours=8)
-        else:
-            start = end - pd.Timedelta(days=1)
+        end = pd.Timestamp.now(tz='America/New_York')
         
+        # Mapeo de timeframes
+        delta_map = {
+            '1Min': pd.Timedelta(hours=2),
+            '5Min': pd.Timedelta(hours=8),
+            '15Min': pd.Timedelta(days=1),
+            '30Min': pd.Timedelta(days=2),
+            '1Hour': pd.Timedelta(days=5)
+        }
+        
+        start = end - delta_map.get(timeframe, pd.Timedelta(days=1))
+        
+        # Obtener datos de Alpaca
         bars = alpaca.get_bars(
             symbol,
             timeframe,
@@ -102,10 +120,23 @@ def get_realtime_data(symbol, timeframe='1Min'):
             limit=100
         ).df
         
+        if bars.empty:
+            # Fallback a Yahoo Finance
+            ticker = yf.Ticker(symbol)
+            bars = ticker.history(period="1d", interval="5m")
+            
         if not bars.empty:
-            bars = add_all_ta_features(
-                bars, open="open", high="high", low="low", close="close", volume="volume"
-            )
+            # Renombrar columnas para compatibilidad
+            bars.columns = bars.columns.str.lower()
+            
+            # Agregar indicadores técnicos
+            try:
+                bars = add_all_ta_features(
+                    bars, open="open", high="high", low="low", close="close", volume="volume",
+                    fillna=True
+                )
+            except:
+                pass
             
             return {
                 'symbol': symbol,
@@ -116,7 +147,7 @@ def get_realtime_data(symbol, timeframe='1Min'):
                 'data': bars
             }
     except Exception as e:
-        st.error(f"Error fetching {symbol}: {e}")
+        st.error(f"Error obteniendo datos de {symbol}: {e}")
         return None
 
 def execute_trade(symbol, side, qty, order_type='market'):
@@ -136,11 +167,12 @@ def execute_trade(symbol, side, qty, order_type='market'):
             'status': order.status
         }
     except Exception as e:
-        st.error(f"Error executing trade: {e}")
+        st.error(f"Error ejecutando trade: {e}")
         return None
 
 # UI Principal
 st.title("🤖 Trading Bot - Alpaca Real Trading")
+st.caption("Conectado a: " + ("Paper Trading" if "paper" in ALPACA_BASE_URL else "Live Trading"))
 
 # Sidebar
 with st.sidebar:
@@ -148,13 +180,13 @@ with st.sidebar:
     
     # Estado del mercado
     market = get_market_status()
-    if market:
-        if market['is_open']:
-            st.success("🟢 Mercado ABIERTO")
-        else:
-            st.error("🔴 Mercado CERRADO")
-            if market['next_open']:
-                st.info(f"Abre: {market['next_open']}")
+    if market['is_open']:
+        st.success("🟢 Mercado ABIERTO")
+    else:
+        st.error("🔴 Mercado CERRADO")
+        if market['next_open']:
+            next_open = pd.Timestamp(market['next_open'])
+            st.info(f"Abre: {next_open.strftime('%H:%M')}")
     
     # Cuenta
     account = get_account_info()
@@ -166,11 +198,14 @@ with st.sidebar:
     st.markdown("---")
     
     # Selección de símbolos
+    default_symbols = ['AAPL', 'TSLA', 'NVDA', 'SPY', 'QQQ']
+    all_symbols = ['AAPL', 'TSLA', 'NVDA', 'SPY', 'QQQ', 'AMZN', 'MSFT', 'META', 
+                   'GOOGL', 'AMD', 'INTC', 'V', 'MA', 'JPM', 'BAC', 'WMT', 'DIS']
+    
     symbols = st.multiselect(
-        "Activos",
-        ['AAPL', 'TSLA', 'NVDA', 'SPY', 'QQQ', 'AMZN', 'MSFT', 'META', 
-         'GOOGL', 'AMD', 'INTC', 'V', 'MA', 'JPM', 'BAC', 'WMT', 'DIS'],
-        default=['AAPL', 'TSLA', 'NVDA']
+        "Activos a monitorear",
+        options=all_symbols,
+        default=default_symbols[:3]
     )
     
     timeframe = st.selectbox(
@@ -179,207 +214,226 @@ with st.sidebar:
         index=1
     )
     
-    auto_refresh = st.checkbox("🔄 Auto-actualizar (10s)")
+    auto_refresh = st.checkbox("🔄 Auto-actualizar (30s)")
 
 # Tabs principales
-tab1, tab2, tab3, tab4, tab5 = st.tabs(["📊 Dashboard", "🎯 Análisis", "💼 Posiciones", "📈 Trading", "📉 Gráficos"])
+tab1, tab2, tab3, tab4 = st.tabs(["📊 Dashboard", "💼 Posiciones", "📈 Trading", "📉 Gráficos"])
 
 with tab1:
     st.header("Dashboard en Tiempo Real")
     
-    # Métricas en columnas
-    cols = st.columns(3)
-    
-    for i, symbol in enumerate(symbols[:9]):  # Máximo 9 símbolos
-        with cols[i % 3]:
-            data = get_realtime_data(symbol, timeframe)
-            if data:
-                st.metric(
-                    label=f"**{symbol}**",
-                    value=f"${data['current_price']:.2f}",
-                    delta=f"RSI: {data['rsi']:.1f}"
-                )
-                st.caption(f"Vol: {data['volume']:,.0f}")
-                st.caption(f"MACD: {data['macd']:.2f}")
-                st.divider()
+    if not symbols:
+        st.warning("Selecciona al menos un símbolo en el sidebar")
+    else:
+        # Crear columnas para mostrar datos
+        cols = st.columns(min(len(symbols), 3))
+        
+        for i, symbol in enumerate(symbols[:9]):
+            with cols[i % 3]:
+                with st.container():
+                    data = get_realtime_data(symbol, timeframe)
+                    if data:
+                        st.metric(
+                            label=f"**{symbol}**",
+                            value=f"${data['current_price']:.2f}",
+                            delta=f"RSI: {data['rsi']:.1f}"
+                        )
+                        
+                        # Señal basada en RSI
+                        rsi = data['rsi']
+                        if rsi < 30:
+                            st.success("🟢 Señal de COMPRA (Sobreventa)")
+                        elif rsi > 70:
+                            st.error("🔴 Señal de VENTA (Sobrecompra)")
+                        else:
+                            st.info("⚪ Neutral")
+                        
+                        st.caption(f"Volumen: {data['volume']:,.0f}")
+                        st.divider()
 
 with tab2:
-    st.header("🎯 Análisis Técnico")
-    
-    for symbol in symbols:
-        data = get_realtime_data(symbol, timeframe)
-        if data:
-            col1, col2, col3, col4, col5 = st.columns(5)
-            
-            with col1:
-                st.subheader(symbol)
-                st.write(f"${data['current_price']:.2f}")
-            
-            with col2:
-                rsi = data['rsi']
-                if rsi < 30:
-                    st.success("⬆️ SOBREVENTA")
-                    signal = "BUY"
-                elif rsi > 70:
-                    st.error("⬇️ SOBRECOMPRA")
-                    signal = "SELL"
-                else:
-                    st.info("➡️ NEUTRAL")
-                    signal = "HOLD"
-            
-            with col3:
-                st.metric("RSI", f"{rsi:.1f}")
-            
-            with col4:
-                st.metric("MACD", f"{data['macd']:.2f}")
-            
-            with col5:
-                if signal == "BUY":
-                    if st.button(f"Comprar {symbol}", key=f"buy_{symbol}"):
-                        order = execute_trade(symbol, "buy", 1)
-                        if order:
-                            st.success(f"✅ Orden ejecutada: {order['order_id']}")
-                elif signal == "SELL":
-                    if st.button(f"Vender {symbol}", key=f"sell_{symbol}"):
-                        order = execute_trade(symbol, "sell", 1)
-                        if order:
-                            st.success(f"✅ Orden ejecutada: {order['order_id']}")
-
-with tab3:
     st.header("💼 Posiciones Actuales")
     
     positions = get_positions()
     
     if positions:
+        # Crear DataFrame para mejor visualización
+        df_positions = pd.DataFrame(positions)
+        
+        # Mostrar métricas generales
+        total_pl = sum([p['unrealized_pl'] for p in positions])
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.metric("Total Posiciones", len(positions))
+        with col2:
+            st.metric("P&L Total", f"${total_pl:,.2f}")
+        with col3:
+            total_value = sum([p['market_value'] for p in positions])
+            st.metric("Valor Total", f"${total_value:,.2f}")
+        
+        st.divider()
+        
+        # Mostrar cada posición
         for pos in positions:
-            col1, col2, col3, col4, col5, col6 = st.columns(6)
+            col1, col2, col3, col4, col5 = st.columns(5)
             
             with col1:
                 st.write(f"**{pos['symbol']}**")
+                st.caption(f"Qty: {pos['qty']}")
             
             with col2:
-                st.write(f"Qty: {pos['qty']}")
+                st.write("Entry")
+                st.caption(f"${pos['avg_entry_price']:.2f}")
             
             with col3:
-                st.write(f"Entry: ${pos['avg_entry_price']:.2f}")
+                st.write("Current")
+                st.caption(f"${pos['current_price']:.2f}")
             
             with col4:
-                st.write(f"Current: ${pos['current_price']:.2f}")
-            
-            with col5:
                 pl = pos['unrealized_pl']
                 pl_pct = pos['unrealized_plpc'] * 100
+                st.write("P&L")
                 if pl >= 0:
-                    st.success(f"P&L: ${pl:.2f} ({pl_pct:.1f}%)")
+                    st.success(f"${pl:.2f} ({pl_pct:.1f}%)")
                 else:
-                    st.error(f"P&L: ${pl:.2f} ({pl_pct:.1f}%)")
+                    st.error(f"${pl:.2f} ({pl_pct:.1f}%)")
             
-            with col6:
+            with col5:
                 if st.button(f"Cerrar", key=f"close_{pos['symbol']}"):
-                    order = execute_trade(pos['symbol'], "sell", pos['qty'])
-                    if order:
-                        st.success("Posición cerrada")
-                        st.rerun()
+                    with st.spinner("Cerrando posición..."):
+                        order = execute_trade(pos['symbol'], "sell", pos['qty'])
+                        if order:
+                            st.success(f"✅ Posición cerrada")
+                            time.sleep(2)
+                            st.rerun()
     else:
         st.info("No hay posiciones abiertas")
 
-with tab4:
+with tab3:
     st.header("📈 Trading Manual")
     
     col1, col2 = st.columns(2)
     
     with col1:
         st.subheader("Nueva Orden")
-        trade_symbol = st.selectbox("Símbolo", symbols, key="trade_symbol")
+        
+        trade_symbol = st.selectbox(
+            "Símbolo",
+            options=all_symbols,
+            key="trade_symbol"
+        )
+        
         trade_side = st.radio("Operación", ["buy", "sell"])
-        trade_qty = st.number_input("Cantidad", min_value=0.01, value=1.0, step=0.01)
-        trade_type = st.selectbox("Tipo", ["market", "limit", "stop"])
         
-        if trade_type == "limit":
-            limit_price = st.number_input("Precio límite", min_value=0.01)
-        else:
-            limit_price = None
+        trade_qty = st.number_input(
+            "Cantidad",
+            min_value=0.01,
+            value=1.0,
+            step=0.01,
+            format="%.2f"
+        )
         
-        if st.button("🚀 Ejecutar Orden", type="primary"):
-            if trade_type == "market":
-                order = execute_trade(trade_symbol, trade_side, trade_qty)
-            else:
-                st.warning("Límites y stops en desarrollo")
-                order = None
+        # Obtener precio actual
+        current_data = get_realtime_data(trade_symbol, "1Min")
+        if current_data:
+            st.info(f"Precio actual: ${current_data['current_price']:.2f}")
             
-            if order:
-                st.success(f"✅ Orden {order['order_id']} ejecutada")
-                st.json(order)
+            # Calcular valor de la operación
+            order_value = current_data['current_price'] * trade_qty
+            st.info(f"Valor de la orden: ${order_value:.2f}")
+        
+        if st.button("🚀 Ejecutar Orden", type="primary", use_container_width=True):
+            with st.spinner("Ejecutando orden..."):
+                order = execute_trade(trade_symbol, trade_side, trade_qty)
+                if order:
+                    st.success(f"✅ Orden ejecutada")
+                    st.json(order)
+                    time.sleep(2)
+                    st.rerun()
     
     with col2:
         st.subheader("Órdenes Recientes")
+        
         try:
             orders = alpaca.list_orders(status='all', limit=10)
-            for order in orders[:5]:
-                st.write(f"• {order.symbol} - {order.side} {order.qty} - {order.status}")
-        except:
-            st.info("No hay órdenes recientes")
+            
+            if orders:
+                for order in orders[:5]:
+                    order_time = order.submitted_at.strftime('%H:%M:%S')
+                    
+                    if order.status == 'filled':
+                        st.success(f"✅ {order_time} - {order.symbol} - {order.side} {order.qty} @ ${order.filled_avg_price or 'Market'}")
+                    elif order.status == 'canceled':
+                        st.error(f"❌ {order_time} - {order.symbol} - Cancelada")
+                    else:
+                        st.warning(f"⏳ {order_time} - {order.symbol} - {order.status}")
+            else:
+                st.info("No hay órdenes recientes")
+                
+        except Exception as e:
+            st.error(f"Error obteniendo órdenes: {e}")
 
-with tab5:
+with tab4:
     st.header("📉 Gráficos en Tiempo Real")
     
-    selected_symbol = st.selectbox("Seleccionar símbolo para gráfico", symbols)
-    
-    if selected_symbol:
-        data = get_realtime_data(selected_symbol, timeframe)
-        if data and 'data' in data:
-            df = data['data']
+    if symbols:
+        selected_symbol = st.selectbox(
+            "Seleccionar símbolo para gráfico",
+            symbols
+        )
+        
+        if selected_symbol:
+            data = get_realtime_data(selected_symbol, timeframe)
             
-            # Crear gráfico de velas
-            fig = go.Figure(data=[go.Candlestick(
-                x=df.index,
-                open=df['open'],
-                high=df['high'],
-                low=df['low'],
-                close=df['close'],
-                name='Precio'
-            )])
-            
-            # Agregar indicadores
-            if 'momentum_rsi' in df.columns:
-                fig.add_trace(go.Scatter(
+            if data and 'data' in data:
+                df = data['data']
+                
+                # Gráfico de velas
+                fig = go.Figure(data=[go.Candlestick(
                     x=df.index,
-                    y=df['close'].rolling(20).mean(),
-                    name='MA20',
-                    line=dict(color='yellow', width=1)
-                ))
-            
-            fig.update_layout(
-                title=f'{selected_symbol} - {timeframe}',
-                yaxis_title='Precio ($)',
-                xaxis_title='Tiempo',
-                template='plotly_dark',
-                height=600
-            )
-            
-            st.plotly_chart(fig, use_container_width=True)
-            
-            # Volumen
-            fig_vol = go.Figure(data=[go.Bar(
-                x=df.index,
-                y=df['volume'],
-                name='Volumen'
-            )])
-            
-            fig_vol.update_layout(
-                title='Volumen',
-                yaxis_title='Volumen',
-                template='plotly_dark',
-                height=200
-            )
-            
-            st.plotly_chart(fig_vol, use_container_width=True)
+                    open=df['open'],
+                    high=df['high'],
+                    low=df['low'],
+                    close=df['close'],
+                    name='Precio'
+                )])
+                
+                # Agregar media móvil si está disponible
+                if len(df) > 20:
+                    fig.add_trace(go.Scatter(
+                        x=df.index,
+                        y=df['close'].rolling(20).mean(),
+                        name='MA20',
+                        line=dict(color='yellow', width=1)
+                    ))
+                
+                fig.update_layout(
+                    title=f'{selected_symbol} - {timeframe}',
+                    yaxis_title='Precio ($)',
+                    xaxis_title='Tiempo',
+                    template='plotly_dark',
+                    height=500
+                )
+                
+                st.plotly_chart(fig, use_container_width=True)
+                
+                # Mostrar indicadores
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    st.metric("RSI", f"{data['rsi']:.1f}")
+                with col2:
+                    st.metric("MACD", f"{data['macd']:.2f}")
+                with col3:
+                    st.metric("Volumen", f"{data['volume']:,.0f}")
+    else:
+        st.warning("Selecciona símbolos en el sidebar")
 
 # Auto-refresh
 if auto_refresh:
-    time.sleep(10)
+    time.sleep(30)
     st.rerun()
 
 # Footer
 st.markdown("---")
-st.caption("🤖 Trading Bot con datos reales de Alpaca Markets")
+st.caption("💡 Trading Bot con datos reales de Alpaca Markets")
+st.caption("⚠️ Este es un bot de trading educacional. Opera bajo tu propio riesgo.")
