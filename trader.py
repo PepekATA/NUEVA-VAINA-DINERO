@@ -58,8 +58,8 @@ class Trader:
                 pos_dict[pos.symbol] = {
                     'qty': float(pos.qty),
                     'avg_entry_price': float(pos.avg_entry_price),
-                    'current_price': float(pos.current_price
-                     'market_value': float(pos.market_value),
+                    'current_price': float(pos.current_price),  # CORREGIDO
+                    'market_value': float(pos.market_value),
                     'unrealized_pl': float(pos.unrealized_pl),
                     'unrealized_plpc': float(pos.unrealized_plpc),
                     'side': pos.side
@@ -384,4 +384,4 @@ class Trader:
             
         except Exception as e:
             self.logger.error(f"Error getting trade history: {str(e)}")
-            return pd.DataFrame()                      
+            return pd.DataFrame()
