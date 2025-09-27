@@ -7,178 +7,200 @@ from pathlib import Path
 load_dotenv()
 
 class Config:
-    # Detectar si estamos en Streamlit Cloud
-    try:
-        import streamlit as st
-        IN_STREAMLIT = True
-        # Si estamos en Streamlit, usar secrets
-        ALPACA_API_KEY = st.secrets.get("ALPACA_API_KEY", os.getenv('ALPACA_API_KEY'))
-        ALPACA_SECRET_KEY = st.secrets.get("ALPACA_SECRET_KEY", os.getenv('ALPACA_SECRET_KEY'))
-        GITHUB_TOKEN = st.secrets.get("GITHUB_TOKEN", os.getenv('GITHUB_TOKEN'))
-        GITHUB_REPO = st.secrets.get("GITHUB_REPO", os.getenv('GITHUB_REPO'))
-        GDRIVE_FOLDER_ID = st.secrets.get("GDRIVE_FOLDER_ID", os.getenv('GDRIVE_FOLDER_ID'))
-    except:
-        IN_STREAMLIT = False
-        # Si no estamos en Streamlit, usar variables de entorno o credenciales locales
-        
-        # Paths para credenciales
-        COLAB_CREDS_PATH = '/content/drive/MyDrive/TradingBot/credentials.json'
-        LOCAL_CREDS_PATH = 'credentials.json'
-        
-        # Intentar cargar credenciales desde archivo
-        creds = {}
-        if os.path.exists(COLAB_CREDS_PATH):
-            with open(COLAB_CREDS_PATH, 'r') as f:
-                creds = json.load(f)
-        elif os.path.exists(LOCAL_CREDS_PATH):
-            with open(LOCAL_CREDS_PATH, 'r') as f:
-                creds = json.load(f)
-        
-        # Usar variables de entorno o credenciales del archivo
-        ALPACA_API_KEY = os.getenv('ALPACA_API_KEY') or creds.get('ALPACA_API_KEY')
-        ALPACA_SECRET_KEY = os.getenv('ALPACA_SECRET_KEY') or creds.get('ALPACA_SECRET_KEY')
-        GITHUB_TOKEN = os.getenv('GITHUB_TOKEN') or creds.get('GITHUB_TOKEN')
-        GITHUB_REPO = os.getenv('GITHUB_REPO') or creds.get('GITHUB_REPO')
-        GDRIVE_FOLDER_ID = os.getenv('GDRIVE_FOLDER_ID') or creds.get('GDRIVE_FOLDER_ID')
+    """Configuración del Trading Bot con 10+ agentes por activo"""
     
-    # Alpaca API Configuration
-    ALPACA_BASE_URL = 'https://paper-api.alpaca.markets'  # Paper trading para empezar
+    # === CREDENCIALES ===
+    # Detectar entorno (Streamlit Cloud, Colab o Local)
+    IN_STREAMLIT = 'STREAMLIT' in os.environ or 'streamlit' in str(Path.cwd())
+    IN_COLAB = 'COLAB_GPU' in os.environ
     
-    # Trading Parameters
-    INITIAL_CAPITAL = 100.0
-    
-    # Complete list of symbols to trade
-    SYMBOLS = [
-        # FAANG+ Tech Giants
-        'AAPL', 'AMZN', 'TSLA', 'MSFT', 'NVDA', 'GOOGL', 'META', 'NFLX',
-        
-        # Semiconductors
-        'AMD', 'INTC', 'QCOM', 'MU', 'AVGO', 'TXN', 'ADI', 'MRVL',
-        
-        # ETFs
-        'SPY', 'QQQ', 'DIA', 'IWM', 'VOO', 'VTI', 'ARKK', 'XLK',
-        
-        # Financials
-        'V', 'MA', 'PYPL', 'SQ', 'AXP', 'DFS', 'COF', 'SYF',
-        'JPM', 'BAC', 'WFC', 'GS', 'MS', 'C', 'USB', 'PNC',
-        
-        # Retail & Consumer
-        'DIS', 'NKE', 'LULU', 'MCD', 'SBUX', 'CMG', 'YUM', 'DPZ',
-        'WMT', 'HD', 'LOW', 'TGT', 'COST', 'KR', 'CVS', 'WBA',
-        
-        # Healthcare & Pharma
-        'JNJ', 'PFE', 'MRK', 'BMY', 'GSK', 'ABBV', 'LLY', 'TMO',
-        'UNH', 'CI', 'ANTM', 'HUM', 'MCK', 'ABC', 'CAH',
-        
-        # Energy
-        'CVX', 'XOM', 'COP', 'EOG', 'PXD', 'DVN', 'FANG', 'MRO',
-        'OXY', 'HES', 'MPC', 'VLO', 'PSX', 'SLB', 'HAL',
-        
-        # Real Estate & Infrastructure
-        'AMT', 'CCI', 'PLD', 'EQIX', 'DLR', 'SBAC', 'PSA', 'O',
-        
-        # Telecom
-        'VZ', 'T', 'TMUS', 'CHTR', 'CMCSA',
-        
-        # Enterprise Software
-        'CSCO', 'ORCL', 'IBM', 'SAP', 'CRM', 'ADBE', 'INTU', 'NOW',
-        'WDAY', 'SNOW', 'TEAM', 'DOCU', 'OKTA', 'ZM', 'TWLO',
-        
-        # Chinese Tech
-        'BABA', 'JD', 'PDD', 'BIDU', 'NTES', 'IQ', 'YY', 'BILI',
-        
-        # Latin America
-        'MELI', 'NU', 'PAGS', 'STNE', 'DESP', 'GLOB',
-        
-        # Gaming & Entertainment
-        'RBLX', 'EA', 'TTWO', 'ATVI', 'U', 'DKNG', 'PENN',
-        
-        # Mobility & Delivery
-        'UBER', 'LYFT', 'GRAB', 'DASH', 'ABNB',
-        
-        # EV & Clean Energy
-        'RIVN', 'LCID', 'NIO', 'XPEV', 'LI', 'FSR', 'PLUG', 'FCEL',
-        'ENPH', 'SEDG', 'RUN', 'NOVA', 'SPWR',
-        
-        # Industrials
-        'CAT', 'DE', 'BA', 'LMT', 'RTX', 'NOC', 'GD', 'HII',
-        'GE', 'HON', 'MMM', 'EMR', 'ROK', 'ITW', 'DOV',
-        
-        # Consumer Staples
-        'PG', 'KO', 'PEP', 'MDLZ', 'MO', 'PM', 'KHC', 'GIS',
-        'K', 'CPB', 'HSY', 'MNST', 'KDP'
-    ]
-    
-    # Minimum 6 agents per asset
-    AGENTS_PER_SYMBOL = 6
-    
-    # Agent types for ensemble learning
-    AGENT_TYPES = [
-        'lstm',           # Long Short-Term Memory
-        'gru',            # Gated Recurrent Unit
-        'cnn',            # Convolutional Neural Network
-        'transformer',    # Transformer architecture
-        'random_forest',  # Random Forest
-        'xgboost',        # XGBoost
-        'lightgbm',       # LightGBM
-        'catboost'        # CatBoost
-    ]
-    
-    TIMEFRAMES = ['1Min', '5Min', '15Min', '30Min', '1Hour', '4Hour', '1Day']
-    
-    # Market Hours (ET)
-    MARKET_TIMEZONE = pytz.timezone('America/New_York')
-    MARKET_OPEN_TIME = '09:30'
-    MARKET_CLOSE_TIME = '16:00'
-    
-    # Model Parameters
-    LOOKBACK_PERIOD = 60
-    PREDICTION_THRESHOLD = 0.65
-    MAX_POSITIONS = 10
-    STOP_LOSS_PCT = 0.02
-    TAKE_PROFIT_PCT = 0.05
-    
-    # File Paths
+    # Cargar credenciales según entorno
     if IN_STREAMLIT:
-        # En Streamlit Cloud usar paths temporales
-        MODELS_DIR = '/tmp/models'
-        DATA_DIR = '/tmp/data'
-        LOGS_DIR = '/tmp/logs'
+        try:
+            import streamlit as st
+            ALPACA_API_KEY = st.secrets.get("ALPACA_API_KEY", "")
+            ALPACA_SECRET_KEY = st.secrets.get("ALPACA_SECRET_KEY", "")
+            GITHUB_TOKEN = st.secrets.get("GITHUB_TOKEN", "")
+            GITHUB_REPO = st.secrets.get("GITHUB_REPO", "")
+            USE_PAPER = st.secrets.get("USE_PAPER", "true").lower() == "true"
+        except:
+            ALPACA_API_KEY = os.getenv("ALPACA_API_KEY", "")
+            ALPACA_SECRET_KEY = os.getenv("ALPACA_SECRET_KEY", "")
+            GITHUB_TOKEN = os.getenv("GITHUB_TOKEN", "")
+            GITHUB_REPO = os.getenv("GITHUB_REPO", "")
+            USE_PAPER = os.getenv("USE_PAPER", "true").lower() == "true"
     else:
-        # En local o Colab usar paths normales
-        MODELS_DIR = 'models'
-        DATA_DIR = 'data'
-        LOGS_DIR = 'logs'
+        ALPACA_API_KEY = os.getenv("ALPACA_API_KEY", "")
+        ALPACA_SECRET_KEY = os.getenv("ALPACA_SECRET_KEY", "")
+        GITHUB_TOKEN = os.getenv("GITHUB_TOKEN", "")
+        GITHUB_REPO = os.getenv("GITHUB_REPO", "")
+        USE_PAPER = os.getenv("USE_PAPER", "true").lower() == "true"
     
-    # Crear directorios si no existen
-    os.makedirs(MODELS_DIR, exist_ok=True)
-    os.makedirs(DATA_DIR, exist_ok=True)
-    os.makedirs(LOGS_DIR, exist_ok=True)
+    # URL de Alpaca (Paper o Real)
+    ALPACA_BASE_URL = 'https://paper-api.alpaca.markets' if USE_PAPER else 'https://api.alpaca.markets'
     
-    # Google Colab specific paths
-    COLAB_DRIVE_PATH = '/content/drive/MyDrive/TradingBot'
+    # === CONFIGURACIÓN DE TRADING ===
+    INITIAL_CAPITAL = 10000.0  # Capital inicial
+    MAX_POSITION_SIZE = 0.1    # Máximo 10% por posición
+    MAX_POSITIONS = 20          # Máximo de posiciones abiertas
+    MIN_CONFIDENCE = 0.70       # Confianza mínima para operar (70%)
+    
+    # Stop Loss y Take Profit dinámicos
+    STOP_LOSS_PCT = 0.02        # 2% stop loss
+    TAKE_PROFIT_PCT = 0.05      # 5% take profit
+    TRAILING_STOP_PCT = 0.015   # 1.5% trailing stop
+    
+    # === 10+ AGENTES POR ACTIVO ===
+    AGENTS_PER_SYMBOL = 10
+    
+    # Tipos de agentes especializados
+    AGENT_CONFIGS = {
+        # Deep Learning Agents (1-5)
+        'lstm_predictor': {
+            'type': 'lstm',
+            'layers': [256, 128, 64],
+            'dropout': 0.3,
+            'lookback': 60
+        },
+        'gru_analyzer': {
+            'type': 'gru', 
+            'layers': [256, 128, 64],
+            'dropout': 0.3,
+            'lookback': 60
+        },
+        'cnn_pattern': {
+            'type': 'cnn',
+            'filters': [128, 64, 32],
+            'kernel_size': 3,
+            'lookback': 60
+        },
+        'transformer_attention': {
+            'type': 'transformer',
+            'heads': 8,
+            'dim': 256,
+            'lookback': 60
+        },
+        'bidirectional_lstm': {
+            'type': 'bilstm',
+            'layers': [128, 64],
+            'dropout': 0.25,
+            'lookback': 60
+        },
+        
+        # Machine Learning Agents (6-10)
+        'xgboost_trend': {
+            'type': 'xgboost',
+            'estimators': 300,
+            'max_depth': 10,
+            'learning_rate': 0.1
+        },
+        'lightgbm_speed': {
+            'type': 'lightgbm',
+            'estimators': 300,
+            'num_leaves': 31,
+            'learning_rate': 0.1
+        },
+        'catboost_categorical': {
+            'type': 'catboost',
+            'iterations': 300,
+            'depth': 8,
+            'learning_rate': 0.1
+        },
+        'random_forest_ensemble': {
+            'type': 'random_forest',
+            'estimators': 500,
+            'max_depth': 20,
+            'min_samples_split': 5
+        },
+        'gradient_boost_optimizer': {
+            'type': 'gradient_boost',
+            'estimators': 300,
+            'max_depth': 10,
+            'learning_rate': 0.1
+        }
+    }
+    
+    # === SÍMBOLOS DE TRADING ===
+    # Top símbolos por liquidez y volatilidad
+    SYMBOLS = [
+        # Tech Giants
+        'AAPL', 'MSFT', 'GOOGL', 'AMZN', 'META', 'TSLA', 'NVDA', 
+        
+        # ETFs principales
+        'SPY', 'QQQ', 'IWM', 'DIA', 'VOO', 'ARKK',
+        
+        # Financieras
+        'JPM', 'BAC', 'V', 'MA', 'PYPL', 'SQ',
+        
+        # Cripto-related
+        'COIN', 'MARA', 'RIOT', 'MSTR',
+        
+        # High volatility
+        'AMD', 'ROKU', 'PLTR', 'NIO', 'LCID', 'RIVN'
+    ]
+    
+    # === TIMEFRAMES ===
+    TIMEFRAMES = {
+        'scalping': '1Min',
+        'day_trading': '5Min',
+        'swing': '15Min',
+        'position': '1Hour'
+    }
+    
+    DEFAULT_TIMEFRAME = '5Min'
+    
+    # === HORARIO DE MERCADO ===
+    MARKET_TIMEZONE = pytz.timezone('America/New_York')
+    MARKET_OPEN = '09:30'
+    MARKET_CLOSE = '16:00'
+    EXTENDED_HOURS = True  # Operar en horario extendido
+    
+    # === PATHS ===
+    if IN_STREAMLIT:
+        BASE_DIR = '/tmp'
+    elif IN_COLAB:
+        BASE_DIR = '/content/drive/MyDrive/TradingBot'
+    else:
+        BASE_DIR = os.getcwd()
+    
+    MODELS_DIR = os.path.join(BASE_DIR, 'models')
+    DATA_DIR = os.path.join(BASE_DIR, 'data')
+    LOGS_DIR = os.path.join(BASE_DIR, 'logs')
+    CHECKPOINTS_DIR = os.path.join(BASE_DIR, 'checkpoints')
+    
+    # Crear directorios
+    for dir_path in [MODELS_DIR, DATA_DIR, LOGS_DIR, CHECKPOINTS_DIR]:
+        os.makedirs(dir_path, exist_ok=True)
+    
+    # === PARÁMETROS DE ENTRENAMIENTO ===
+    EPOCHS = 50
+    BATCH_SIZE = 32
+    LEARNING_RATE = 0.001
+    VALIDATION_SPLIT = 0.2
+    EARLY_STOPPING_PATIENCE = 10
+    
+    # === SINCRONIZACIÓN ===
+    SYNC_INTERVAL_MINUTES = 30  # Sincronizar cada 30 minutos
+    AUTO_SYNC_ENABLED = True
     
     @classmethod
-    def save_credentials(cls, alpaca_key, alpaca_secret, github_token, github_repo, gdrive_folder_id):
-        """Save credentials to file"""
-        creds = {
-            'ALPACA_API_KEY': alpaca_key,
-            'ALPACA_SECRET_KEY': alpaca_secret,
-            'GITHUB_TOKEN': github_token,
-            'GITHUB_REPO': github_repo,
-            'GDRIVE_FOLDER_ID': gdrive_folder_id
+    def get_agent_config(cls, agent_name):
+        """Obtener configuración de un agente específico"""
+        return cls.AGENT_CONFIGS.get(agent_name, {})
+    
+    @classmethod
+    def save_config(cls):
+        """Guardar configuración actual"""
+        config_data = {
+            'timestamp': str(datetime.now()),
+            'agents': cls.AGENT_CONFIGS,
+            'symbols': cls.SYMBOLS,
+            'capital': cls.INITIAL_CAPITAL,
+            'environment': 'paper' if cls.USE_PAPER else 'real'
         }
         
-        try:
-            # Check if running in Google Colab
-            if os.path.exists('/content'):
-                creds_path = cls.COLAB_CREDS_PATH
-                os.makedirs(os.path.dirname(creds_path), exist_ok=True)
-            else:
-                creds_path = cls.LOCAL_CREDS_PATH
-                
-            with open(creds_path, 'w') as f:
-                json.dump(creds, f)
-            return True
-        except:
-            return False
+        config_file = os.path.join(cls.DATA_DIR, 'config_backup.json')
+        with open(config_file, 'w') as f:
+            json.dump(config_data, f, indent=2)
+        
+        return config_file
