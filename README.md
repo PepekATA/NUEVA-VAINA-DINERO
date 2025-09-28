@@ -2,7 +2,7 @@
 
 ## 📊 Estado del Sistema
 
-- **Última actualización:** 2025-09-28 18:21:58
+- **Última actualización:** 2025-09-28 18:23:47
 - **Modelos entrenados:** 10
 - **Sincronizaciones:** 0
 - **Estado:** ✅ Activo
@@ -10,7 +10,7 @@
 ## 📈 Rendimiento
 
 
-- **Precisión promedio:** 0.4987
+- **Precisión promedio:** 0.4954
 - **Mejor modelo:** N/A
 - **Cryptos procesadas:** 1
 

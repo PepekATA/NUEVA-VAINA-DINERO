@@ -1,0 +1,9 @@
+{
+  "symbol": "BTC/USD",
+  "timeframe": "5Min",
+  "timestamp": "2025-09-28T18:23:46.857035",
+  "models_trained": 9,
+  "avg_accuracy": 0.4954232645152669,
+  "best_accuracy": 0.5051112447384245,
+  "cryptos_trained": 1
+}
