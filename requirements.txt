@@ -1,21 +1,24 @@
 # Core
 alpaca-trade-api==3.1.1
+alpaca-py==0.13.3
 pandas==2.1.4
 numpy==1.24.3
 
 # Async
-aiohttp==3.9.1
 asyncio==3.4.3
+aiohttp==3.9.1
 
-# ML (versiones ligeras para inferencia)
+# ML para predicciones
 scikit-learn==1.3.2
 joblib==1.3.2
-tensorflow-cpu==2.15.0  # CPU version for Render
+xgboost==2.0.3
+lightgbm==4.1.0
 
 # Technical Analysis
 ta==0.11.0
+ta-lib==0.4.28
 
-# API
+# API & Server
 flask==3.0.0
 gunicorn==21.2.0
 
@@ -23,3 +26,7 @@ gunicorn==21.2.0
 python-dotenv==1.0.0
 pytz==2023.3
 requests==2.31.0
+websocket-client==1.6.4
+
+# Logging
+colorlog==6.7.0
