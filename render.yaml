@@ -1,0 +1,21 @@
+services:
+  - type: worker
+    name: trading-bot-pro
+    runtime: python
+    plan: starter # $7/month para 24/7
+    env: python
+    buildCommand: pip install -r requirements_render.txt
+    startCommand: python bot_render.py
+    healthCheckPath: /health
+    envVars:
+      - key: ALPACA_API_KEY
+        sync: false
+      - key: ALPACA_SECRET_KEY
+        sync: false
+      - key: GITHUB_TOKEN
+        sync: false
+      - key: USE_PAPER
+        value: true # Cambiar a false para trading real
+      - key: TRADING_MODE
+        value: scalping
+    autoDeploy: true # Auto-deploy cuando GitHub se actualiza
